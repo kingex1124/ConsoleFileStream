@@ -13,7 +13,9 @@ namespace ConsoleFileStream
         {
             StreamSample ss = new StreamSample();
 
-            ss.TextReaderEX();
+            //ss.TextReaderEX();
+
+            ss.UseMemoryStreamInXMLWriter();
         }
 
         #region 字串 <=> Byte[]

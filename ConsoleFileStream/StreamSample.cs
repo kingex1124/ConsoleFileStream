@@ -1,10 +1,14 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Web;
+using System.Xml;
 
 namespace ConsoleFileStream
 {
@@ -711,6 +715,217 @@ namespace ConsoleFileStream
         }
 
         #endregion
+
+        #endregion
+
+        #region MemoryStream
+
+        #region OutOfMemory
+
+        public void OutOfMemoryEX()
+        {
+            //測試byte數組假設該數組容量是256M 
+            byte[] testBytes = new byte[256 * 1024 * 1024];
+            MemoryStream ms = new MemoryStream();
+            using (ms)
+            {
+                for (int i = 0; i < 1000; i++)
+                {
+                    try
+                    {
+                        ms.Write(testBytes, 0, testBytes.Length);
+                    }
+                    catch
+                    {
+                        Console.WriteLine("該內存流已經使用了{0}M容量的內存,該內存流最大容量為{1}M,溢出時容量為{2}M ",
+                            GC.GetTotalMemory(false) / (1024 * 1024), // MemoryStream已經消耗內存量
+                            ms.Capacity / (1024 * 1024), // MemoryStream最大的可用容量
+                            ms.Length / (1024 * 1024)); // MemoryStream當前流的長度（容量）
+                        break;
+                    }
+                }
+            }
+
+            Console.ReadLine();
+        }
+
+        #endregion
+
+        #region XmlWriter中使用MemoryStream
+
+        ///  <summary> 
+        ///演示在xmlWriter中使用MemoryStream
+        ///  </summary> 
+        public void UseMemoryStreamInXMLWriter()
+        {
+            MemoryStream ms = new MemoryStream();
+            using (ms)
+            {
+                //定義一個XMLWriter 
+                using (XmlWriter writer = XmlWriter.Create(ms))
+                {
+                    //寫入xml頭
+                    writer.WriteStartDocument(true);
+                    //寫入一個元素
+                    writer.WriteStartElement("Content");
+                    //為這個元素新增一個test屬性
+                    writer.WriteStartAttribute("test");
+                    //設置test屬性的值
+                    writer.WriteValue("逆時針的風");
+                    //釋放緩衝，這裡可以不用釋放，但是在實際項目中可能要考慮部分釋放對性能帶來的提升
+                    writer.Flush();
+                    Console.WriteLine("此時內存使用量為:{2}KB,該MemoryStream的已經使用的容量為{0}byte,默認容量為{1}byte ",
+                        Math.Round((double)ms.Length, 4), ms.Capacity, GC.GetTotalMemory(false) / 1024);
+                    Console.WriteLine("重新定位前MemoryStream所在的位置是{0} ", ms.Position);
+                    //將流中所在的當前位置往後移動7位，相當於空格
+                    ms.Seek(7, SeekOrigin.Current);
+                    Console.WriteLine("重新定位後MemoryStream所在的位置是{0} ", ms.Position);
+                    //如果將流所在的位置設置為如下所示的位置則xml文件會被打亂
+                    // ms.Position = 0; 
+                    writer.WriteStartElement("Content2");
+                    writer.WriteStartAttribute("testInner");
+                    writer.WriteValue("逆時針的風Inner ");
+                    writer.WriteEndElement();
+                    writer.WriteEndElement();
+                    //再次釋放
+                    writer.Flush();
+                    Console.WriteLine("此時內存使用量為:{2}KB,該MemoryStream的已經使用的容量為{0}byte,默認容量為{1}byte ",
+                        Math.Round((double)ms.Length, 4), ms.Capacity, GC.GetTotalMemory(false) / 1024);
+                    //建立一個FileStream文件創建目的地是d:\test.xml 
+                    FileStream fs = new FileStream(@" d:\test.xml ", FileMode.OpenOrCreate);
+                    using (fs)
+                    {
+                        //將內存流注入FileStream 
+                        ms.WriteTo(fs);
+                        if (ms.CanWrite)
+                            //釋放緩衝區
+                            fs.Flush();
+                    }
+                }
+            }
+        }
+
+        #endregion
+
+        #region 自定義一個處理圖片的HttpHandler
+
+        public class ImageHandler : IHttpHandler
+        {
+            #region IHttpHandler Members
+
+            public bool IsReusable
+            {
+                get { return true; }
+            }
+
+            ///  <summary> 
+            ///實現IHTTPHandler後必須實現的方法
+            ///  </summary> 
+            ///  <param name="context"> HttpContext上下文</param> 
+            public void ProcessRequest(HttpContext context)
+            {
+                context.Response.Clear();
+                //得到圖片名
+                var imageName = context.Request["ImageName"] == null ? "逆時針的風"
+                    : context.Request["ImageName"].ToString();
+                //得到圖片ID,這裡只是演示，實際項目中不是這麼做的
+                var id = context.Request["Id"] == null ? " 01 "
+                    : context.Request["Id"].ToString();
+                //得到圖片地址
+                var stringFilePath = context.Server.MapPath(string.Format(" ~/Image/{0}{1}.jpg ", imageName, id));
+                //聲明一個FileStream用來將圖片暫時放入流中
+                FileStream stream = new FileStream(stringFilePath, FileMode.Open);
+                using (stream)
+                {
+                    //透過GetImageFromStream方法將圖片放入byte數組中
+                    byte[] imageBytes = this.GetImageFromStream(stream, context);
+                    //上下文確定寫到客戶短時的文件類型
+                    context.Response.ContentType = " image/jpeg ";
+                    //上下文將imageBytes中的數據寫到前段
+                    context.Response.BinaryWrite(imageBytes);
+                    stream.Close();
+                }
+            }
+
+            ///  <summary> 
+            ///將流中的圖片信息放入byte數組後返回該數組
+            ///  </summary> 
+            ///  <param name="stream">文件流</param> 
+            ///  <param name="context">上下文</param> 
+            ///  <returns></returns> 
+            private byte[] GetImageFromStream(FileStream stream, HttpContext context)
+            {
+                //通過stream得到Image 
+                Image image = Image.FromStream(stream);
+                //加上水印
+                image = SetWaterImage(image, context);
+                //得到一個ms對象
+                MemoryStream ms = new MemoryStream();
+                using (ms)
+                {
+                    //將圖片保存至內存流
+                    image.Save(ms, ImageFormat.Jpeg);
+                    byte[] imageBytes = new byte[ms.Length];
+                    ms.Position = 0;
+                    //通過內存流讀取到imageBytes 
+                    ms.Read(imageBytes, 0, imageBytes.Length);
+                    ms.Close();
+                    //返回imageBytes 
+                    return imageBytes;
+                }
+            }
+            ///  <summary> 
+            ///為圖片加上水印，這個方法不用在意，只是演示，所以沒加透明度
+            ///下次再加上吧
+            ///  </summary> 
+            ///  <param name= "image">需要加水印的圖片</param> 
+            ///  <param name="context">上下文</param> 
+            ///  <returns></returns> 
+            private Image SetWaterImage(Image image, HttpContext context)
+            {
+                Graphics graphics = Graphics.FromImage(image);
+                Image waterImage = Image.FromFile(context.Server.MapPath(" ~/Image/逆時針的風01.jpg "));
+                //在大圖右下角畫上水印圖就行
+                graphics.DrawImage(waterImage,
+                     new Point
+                     {
+                         X = image.Size.Width - waterImage.Size.Width,
+                         Y = image.Size.Height - waterImage.Size.Height
+                     });
+                return image;
+            }
+
+            #endregion
+
+            #region Web.config 要加入的東西
+
+            //< httpHandlers > 
+            //   < add type = "ImageHandler.ImageHandler,ImageHandler"   verb ="*" path ="ImageHandler.apsx" /> 
+            //</ httpHandlers >
+
+            #endregion
+
+            #region 前台使用
+
+            //< asp:Content ID = "BodyContent" runat ="server" ContentPlaceHolderID ="MainContent" > 
+            // < h2 >
+            //     About
+            // </ h2> 
+            // < p >
+            //     Put content here.
+            //     < asp:Image runat = "server" ImageUrl ="ImageHandler.apsx?ImageName=逆時針的風&Id=02"  /> 
+            // </ p > 
+            //</ asp:Content >
+
+            #endregion
+
+        }
+
+        #endregion
+
+        #endregion
+
+        #region BufferedStream
 
         #endregion
     }
